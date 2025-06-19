@@ -108,3 +108,114 @@ def search_user_messages(guild_id, user_id):
             if batch_count == 0:
                 break
 
+            offset += 25
+            print(f"  Fetched {len(all_msgs)} / {total} messages...")
+            time.sleep(0.5)
+
+            if len(all_msgs) % 500 < 25:
+                save_progress(all_msgs, seen_ids, max_id)
+
+            if offset >= 9975:
+                break
+
+        if offset >= 9975 and all_msgs:
+            oldest = min(all_msgs, key=lambda m: int(m["id"]))
+            new_max_id = str(int(oldest["id"]) - 1)
+            if new_max_id == max_id:
+                break
+            max_id = new_max_id
+            save_progress(all_msgs, seen_ids, max_id)
+            print(f"  Resetting pagination window (max_id={max_id})...")
+            continue
+        else:
+            break
+
+    save_progress(all_msgs, seen_ids, max_id)
+    return all_msgs
+
+
+def get_context_for_message(channel_id, message_id):
+    """Fetch messages around a specific message for context pairs."""
+    url = (
+        f"https://discord.com/api/v9/channels/{channel_id}/messages"
+        f"?around={message_id}&limit=5"
+    )
+    r = api_request(url)
+    if r.status_code != 200:
+        return []
+    msgs = r.json()
+    msgs.sort(key=lambda m: m["id"])
+    return msgs
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Scrape Discord messages from a specific user in a guild.")
+    parser.add_argument("--guild-id", required=True, help="Discord guild (server) ID")
+    parser.add_argument("--user-id", required=True, help="Discord user ID to scrape messages from")
+    args = parser.parse_args()
+
+    guild_id = args.guild_id
+    user_id = args.user_id
+
+    # Step 1: Fetch all messages from the target user
+    my_msgs = search_user_messages(guild_id, user_id)
+
+    if not my_msgs:
+        print("No messages found! Check that the user ID and guild ID are correct.")
+        return
+
+    my_msgs.sort(key=lambda m: m["id"])
+
+    # Save raw messages
+    raw_path = os.path.join(OUTPUT_DIR, "messages.jsonl")
+    with open(raw_path, "w") as f:
+        for m in my_msgs:
+            if m["content"].strip():
+                json.dump({"text": m["content"], "channel": m["channel_id"], "timestamp": m["timestamp"]}, f)
+                f.write("\n")
+
+    print(f"\nSaved {len(my_msgs)} raw messages to {raw_path}")
+
+    # Step 2: Fetch surrounding context to build conversation pairs
+    print(f"\nBuilding conversation pairs (fetching context for {len(my_msgs)} messages)...")
+    pairs = []
+    for i, m in enumerate(my_msgs):
+        if not m["content"].strip():
+            continue
+
+        context = get_context_for_message(m["channel_id"], m["id"])
+        if not context:
+            continue
+
+        for j, ctx_msg in enumerate(context):
+            if ctx_msg["id"] == m["id"] and j > 0:
+                prev = context[j - 1]
+                if prev["author"]["id"] != user_id and prev["content"].strip():
+                    pairs.append({
+                        "prompt": prev["content"],
+                        "completion": m["content"],
+                        "channel": m["channel_id"],
+                        "timestamp": m["timestamp"],
+                    })
+                break
+
+        if (i + 1) % 50 == 0:
+            print(f"  Context fetched for {i + 1} / {len(my_msgs)} messages ({len(pairs)} pairs so far)...")
+        time.sleep(0.3)
+
+    # Save pairs
+    pairs_path = os.path.join(OUTPUT_DIR, "pairs.jsonl")
+    with open(pairs_path, "w") as f:
+        for pair in pairs:
+            json.dump(pair, f)
+            f.write("\n")
+
+    print(f"\n{'=' * 50}")
+    print(f"Total messages scraped: {len(my_msgs)}")
+    print(f"Total conversation pairs: {len(pairs)}")
+    print(f"Raw messages: {raw_path}")
+    print(f"Conversation pairs: {pairs_path}")
+
+
+if __name__ == "__main__":
+    main()
