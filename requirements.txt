@@ -1,0 +1,8 @@
+requests>=2.31.0
+
+# Fine-tuning dependencies (finetune/)
+unsloth>=2024.8
+trl>=0.9.0
+transformers>=4.42.0
+datasets>=2.20.0
+torch>=2.1.0
